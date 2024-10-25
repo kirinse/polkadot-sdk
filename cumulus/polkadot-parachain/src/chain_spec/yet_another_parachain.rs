@@ -21,7 +21,6 @@ use parachains_common::genesis_config_helpers::get_account_id_from_seed;
 use polkadot_omni_node_lib::chain_spec::{Extensions, GenericChainSpec};
 use sc_chain_spec::ChainType;
 use sp_core::{
-	crypto::AccountId32,
 	sr25519::{self, Pair as SrPair},
 	Pair,
 };
