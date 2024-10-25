@@ -64,12 +64,8 @@ pub use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 pub use sp_runtime::BuildStorage;
 pub use sp_runtime::{Perbill, Permill};
 
-use cumulus_primitives_core::{
-	AggregateMessageOrigin, ClaimQueueOffset, CoreSelector,
-};
-use parachains_common::{
-	AccountId, Signature,
-};
+use cumulus_primitives_core::{AggregateMessageOrigin, ClaimQueueOffset, CoreSelector};
+use parachains_common::{AccountId, Signature};
 
 pub type SessionHandlers = ();
 

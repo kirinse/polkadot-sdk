@@ -20,7 +20,11 @@ use crate::chain_spec::get_from_seed;
 use parachains_common::genesis_config_helpers::get_account_id_from_seed;
 use polkadot_omni_node_lib::chain_spec::{Extensions, GenericChainSpec};
 use sc_chain_spec::ChainType;
-use sp_core::{Pair, crypto::AccountId32, sr25519::{self, Pair as SrPair}};
+use sp_core::{
+	crypto::AccountId32,
+	sr25519::{self, Pair as SrPair},
+	Pair,
+};
 use yet_another_parachain_runtime::AuraId;
 
 const NUM_ACCOUNT_PAIRS: usize = 16000;
@@ -78,8 +82,16 @@ pub fn yet_another_parachain_config(
 		get_account_id_from_seed::<sr25519::Public>("Ferdie//stash"),
 	];
 
-	endowed_accounts.extend(derive_accounts(NUM_ACCOUNT_PAIRS, "//Sender".into()).into_iter().map(|k| k.public().into()));
-	endowed_accounts.extend(derive_accounts(NUM_ACCOUNT_PAIRS, "//Receiver".into()).into_iter().map(|k| k.public().into()));
+	endowed_accounts.extend(
+		derive_accounts(NUM_ACCOUNT_PAIRS, "//Sender".into())
+			.into_iter()
+			.map(|k| k.public().into()),
+	);
+	endowed_accounts.extend(
+		derive_accounts(NUM_ACCOUNT_PAIRS, "//Receiver".into())
+			.into_iter()
+			.map(|k| k.public().into()),
+	);
 
 	GenericChainSpec::builder(
 		yet_another_parachain_runtime::WASM_BINARY
