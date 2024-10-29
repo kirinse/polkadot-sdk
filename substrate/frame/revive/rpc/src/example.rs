@@ -15,19 +15,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //! Example utilities
-#![cfg(feature = "example")]
+#![cfg(any(feature = "example", test))]
 
 use crate::{EthRpcClient, ReceiptInfo};
 use anyhow::Context;
-use jsonrpsee::http_client::HttpClient;
 use pallet_revive::evm::{
 	rlp::*, Account, BlockTag, Bytes, GenericTransaction, TransactionLegacyUnsigned, H160, H256,
 	U256,
 };
 
 /// Wait for a transaction receipt.
-pub async fn wait_for_receipt(client: &HttpClient, hash: H256) -> anyhow::Result<ReceiptInfo> {
-	for _ in 0..6 {
+pub async fn wait_for_receipt(
+	client: &(impl EthRpcClient + Send + Sync),
+	hash: H256,
+) -> anyhow::Result<ReceiptInfo> {
+	for _ in 0..30 {
 		tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 		let receipt = client.get_transaction_receipt(hash).await?;
 		if let Some(receipt) = receipt {
@@ -41,7 +43,7 @@ pub async fn wait_for_receipt(client: &HttpClient, hash: H256) -> anyhow::Result
 /// Send a transaction.
 pub async fn send_transaction(
 	signer: &Account,
-	client: &HttpClient,
+	client: &(impl EthRpcClient + Send + Sync),
 	value: U256,
 	input: Bytes,
 	to: Option<H160>,
@@ -70,8 +72,6 @@ pub async fn send_transaction(
 		)
 		.await
 		.with_context(|| "Failed to fetch gas estimate")?;
-
-	println!("Estimated Gas: {gas:?}");
 
 	let unsigned_tx = TransactionLegacyUnsigned {
 		gas,

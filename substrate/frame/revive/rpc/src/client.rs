@@ -16,14 +16,15 @@
 // limitations under the License.
 //! The client connects to the source substrate chain
 //! and is used by the rpc server to query and send transactions to the substrate chain.
-
-#![allow(unused_imports, unused_variables)]
 use crate::{
 	rlp,
-	subxt_client::{revive::calls::types::EthTransact, runtime_types::frame_system::EventRecord},
+	runtime::GAS_PRICE,
+	subxt_client::{
+		revive::calls::types::EthTransact, runtime_types::pallet_revive::storage::ContractInfo,
+	},
 	TransactionLegacySigned, LOG_TARGET,
 };
-use codec::{Decode, Encode};
+use codec::Encode;
 use futures::{stream, StreamExt};
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
 use pallet_revive::{
@@ -32,9 +33,9 @@ use pallet_revive::{
 		Block, BlockNumberOrTag, BlockNumberOrTagOrHash, Bytes256, GenericTransaction, ReceiptInfo,
 		SyncingProgress, SyncingStatus, TransactionSigned, H160, H256, U256,
 	},
-	ContractResult, EthContractResult,
+	EthContractResult,
 };
-use sp_runtime::traits::Hash;
+use sp_runtime::traits::{BlakeTwo256, Hash};
 use sp_weights::Weight;
 use std::{
 	collections::{HashMap, VecDeque},
@@ -49,11 +50,9 @@ use subxt::{
 			RpcClient,
 		},
 	},
-	config::{signed_extensions::CheckNonce, Header},
+	config::Header,
 	error::RpcError,
 	storage::Storage,
-	tx::TxClient,
-	utils::AccountId32,
 	Config, OnlineClient,
 };
 use subxt_client::transaction_payment::events::TransactionFeePaid;
@@ -64,14 +63,6 @@ use tokio::{
 };
 
 use crate::subxt_client::{self, system::events::ExtrinsicSuccess, SrcChainConfig};
-
-pub mod primitives {
-	use sp_core::H160;
-	pub type Hashing = sp_runtime::traits::BlakeTwo256;
-	pub type AccountId = sp_runtime::AccountId32;
-	pub type AccountIndex = u32;
-	pub type MultiAddress = sp_runtime::MultiAddress<AccountId, AccountIndex>;
-}
 
 /// The substrate block type.
 pub type SubstrateBlock = subxt::blocks::Block<SrcChainConfig, OnlineClient<SrcChainConfig>>;
@@ -87,12 +78,6 @@ pub type Shared<T> = Arc<RwLock<T>>;
 
 /// The runtime balance type.
 pub type Balance = u128;
-
-/// The EVM gas price.
-/// We use a fixed value for the gas price.
-/// This let us calculate the gas estimate for a transaction with the formula:
-/// `estimate_gas = substrate_fee / gas_price`.
-pub const GAS_PRICE: u128 = 1u128;
 
 /// The cache maintains a buffer of the last N blocks,
 #[derive(Default)]
@@ -117,17 +102,38 @@ struct BlockCache<const N: usize> {
 	tx_hashes_by_block_and_index: HashMap<H256, HashMap<U256, H256>>,
 }
 
+fn unwrap_subxt_err(err: &subxt::Error) -> String {
+	match err {
+		subxt::Error::Rpc(err) => unwrap_rpc_err(err),
+		_ => err.to_string(),
+	}
+}
+
+fn unwrap_rpc_err(err: &subxt::error::RpcError) -> String {
+	match err {
+		subxt::error::RpcError::ClientError(err) => match err
+			// TODO use the re-export from subxt once available
+			.downcast_ref::<jsonrpsee::core::ClientError>()
+		{
+			Some(jsonrpsee::core::ClientError::Call(call_err)) => call_err.message().to_string(),
+			Some(other_err) => other_err.to_string(),
+			None => err.to_string(),
+		},
+		_ => err.to_string(),
+	}
+}
+
 /// The error type for the client.
 #[derive(Error, Debug)]
 pub enum ClientError {
 	/// A [`subxt::Error`] wrapper error.
-	#[error("Subxt error: {0}")]
+	#[error("{}",unwrap_subxt_err(.0))]
 	SubxtError(#[from] subxt::Error),
 	/// A [`RpcError`] wrapper error.
-	#[error("RPC error: {0}")]
+	#[error("{}",unwrap_rpc_err(.0))]
 	RpcError(#[from] RpcError),
 	/// A [`codec::Error`] wrapper error.
-	#[error("Codec error: {0}")]
+	#[error(transparent)]
 	CodecError(#[from] codec::Error),
 	/// The dry run failed.
 	#[error("Dry run failed")]
@@ -149,15 +155,13 @@ pub enum ClientError {
 	CacheEmpty,
 }
 
+const GENERIC_ERROR_CODE: ErrorCode = ErrorCode::ServerError(-32000);
+
 // Convert a `ClientError` to an RPC `ErrorObjectOwned`.
 impl From<ClientError> for ErrorObjectOwned {
 	fn from(value: ClientError) -> Self {
 		log::debug!(target: LOG_TARGET, "ClientError: {value:?}");
-		ErrorObjectOwned::owned::<()>(
-			ErrorCode::InternalError.code(),
-			ErrorCode::InternalError.message(),
-			None,
-		)
+		ErrorObjectOwned::owned::<()>(GENERIC_ERROR_CODE.code(), value.to_string(), None)
 	}
 }
 
@@ -195,7 +199,9 @@ impl<const N: usize> BlockCache<N> {
 
 /// A client connect to a node and maintains a cache of the last `CACHE_SIZE` blocks.
 pub struct Client {
+	/// The inner state of the client.
 	inner: Arc<ClientInner>,
+	// JoinSet to manage spawned tasks.
 	join_set: JoinSet<Result<(), ClientError>>,
 	/// A watch channel to signal cache updates.
 	pub updates: tokio::sync::watch::Receiver<()>,
@@ -232,7 +238,7 @@ impl ClientInner {
 	}
 
 	/// Convert a native balance to an EVM balance.
-	pub fn native_to_evm_decimals(&self, value: U256) -> U256 {
+	fn native_to_evm_decimals(&self, value: U256) -> U256 {
 		value.saturating_mul(self.native_to_evm_ratio)
 	}
 
@@ -274,7 +280,7 @@ impl ClientInner {
 
 				let success = events.find_first::<ExtrinsicSuccess>().is_ok();
 				let transaction_index = ext.index();
-				let transaction_hash = primitives::Hashing::hash(&Vec::from(ext.bytes()).encode());
+				let transaction_hash = BlakeTwo256::hash(&Vec::from(ext.bytes()).encode());
 				let block_hash = block.hash();
 				let block_number = block.number().into();
 
@@ -363,23 +369,75 @@ impl Client {
 		Ok(Self { inner, join_set, updates })
 	}
 
+	/// Expose the storage API.
+	async fn storage_api(
+		&self,
+		at: &BlockNumberOrTagOrHash,
+	) -> Result<Storage<SrcChainConfig, OnlineClient<SrcChainConfig>>, ClientError> {
+		match at {
+			BlockNumberOrTagOrHash::U256(block_number) => {
+				let n: SubstrateBlockNumber =
+					(*block_number).try_into().map_err(|_| ClientError::ConversionFailed)?;
+
+				let hash = self.get_block_hash(n).await?.ok_or(ClientError::BlockNotFound)?;
+				Ok(self.inner.api.storage().at(hash))
+			},
+			BlockNumberOrTagOrHash::H256(hash) => Ok(self.inner.api.storage().at(*hash)),
+			BlockNumberOrTagOrHash::BlockTag(_) => {
+				if let Some(block) = self.latest_block().await {
+					return Ok(self.inner.api.storage().at(block.hash()));
+				}
+				let storage = self.inner.api.storage().at_latest().await?;
+				Ok(storage)
+			},
+		}
+	}
+
+	/// Expose the runtime API.
+	async fn runtime_api(
+		&self,
+		at: &BlockNumberOrTagOrHash,
+	) -> Result<
+		subxt::runtime_api::RuntimeApi<SrcChainConfig, OnlineClient<SrcChainConfig>>,
+		ClientError,
+	> {
+		match at {
+			BlockNumberOrTagOrHash::U256(block_number) => {
+				let n: SubstrateBlockNumber =
+					(*block_number).try_into().map_err(|_| ClientError::ConversionFailed)?;
+
+				let hash = self.get_block_hash(n).await?.ok_or(ClientError::BlockNotFound)?;
+				Ok(self.inner.api.runtime_api().at(hash))
+			},
+			BlockNumberOrTagOrHash::H256(hash) => Ok(self.inner.api.runtime_api().at(*hash)),
+			BlockNumberOrTagOrHash::BlockTag(_) => {
+				if let Some(block) = self.latest_block().await {
+					return Ok(self.inner.api.runtime_api().at(block.hash()));
+				}
+
+				let api = self.inner.api.runtime_api().at_latest().await?;
+				Ok(api)
+			},
+		}
+	}
+
 	/// Subscribe and log reconnection events.
 	async fn subscribe_reconnect(inner: Arc<ClientInner>) -> Result<(), ClientError> {
 		let rpc = inner.as_ref().rpc_client.clone();
 		loop {
 			let reconnected = rpc.reconnect_initiated().await;
-			log::info!("RPC client connection lost");
+			log::info!(target: LOG_TARGET, "RPC client connection lost");
 			let now = std::time::Instant::now();
 			reconnected.await;
-			log::info!("RPC client reconnection took `{}s`", now.elapsed().as_secs());
+			log::info!(target: LOG_TARGET, "RPC client reconnection took `{}s`", now.elapsed().as_secs());
 		}
 	}
 
 	/// Subscribe to new blocks and update the cache.
 	async fn subscribe_blocks(inner: Arc<ClientInner>, tx: Sender<()>) -> Result<(), ClientError> {
-		log::info!("Subscribing to new blocks");
+		log::info!(target: LOG_TARGET, "Subscribing to new blocks");
 		let mut block_stream =
-			inner.as_ref().api.blocks().subscribe_finalized().await.inspect_err(|err| {
+			inner.as_ref().api.blocks().subscribe_best().await.inspect_err(|err| {
 				log::error!("Failed to subscribe to blocks: {err:?}");
 			})?;
 
@@ -399,7 +457,7 @@ impl Client {
 				},
 			};
 
-			log::debug!("Pushing block: {}", block.number());
+			log::trace!(target: LOG_TARGET, "Pushing block: {}", block.number());
 			let mut cache = inner.cache.write().await;
 
 			let receipts = inner
@@ -411,7 +469,7 @@ impl Client {
 				.unwrap_or_default();
 
 			if !receipts.is_empty() {
-				log::debug!("Adding {} receipts", receipts.len());
+				log::debug!(target: LOG_TARGET, "Adding {} receipts", receipts.len());
 				let values = receipts
 					.iter()
 					.map(|(hash, (_, receipt))| (receipt.transaction_index, *hash))
@@ -432,10 +490,12 @@ impl Client {
 			tx.send_replace(());
 		}
 
-		log::info!("Block subscription ended");
+		log::info!(target: LOG_TARGET, "Block subscription ended");
 		Ok(())
 	}
+}
 
+impl Client {
 	/// Get the most recent block stored in the cache.
 	pub async fn latest_block(&self) -> Option<Arc<SubstrateBlock>> {
 		let cache = self.inner.cache.read().await;
@@ -444,8 +504,13 @@ impl Client {
 	}
 
 	/// Expose the transaction API.
-	pub fn tx(&self) -> TxClient<SrcChainConfig, OnlineClient<SrcChainConfig>> {
-		self.inner.api.tx()
+	pub async fn submit(
+		&self,
+		call: subxt::tx::DefaultPayload<EthTransact>,
+	) -> Result<H256, ClientError> {
+		let ext = self.inner.api.tx().create_unsigned(&call).map_err(ClientError::from)?;
+		let hash = ext.submit().await?;
+		Ok(hash)
 	}
 
 	/// Get an EVM transaction receipt by hash.
@@ -456,7 +521,6 @@ impl Client {
 
 	/// Get the syncing status of the chain.
 	pub async fn syncing(&self) -> Result<SyncingStatus, ClientError> {
-		use subxt::backend::rpc::RpcClientT;
 		let health = self.inner.rpc.system_health().await?;
 
 		let status = if health.is_syncing {
@@ -501,72 +565,19 @@ impl Client {
 		cache.tx_hashes_by_block_and_index.get(block_hash).map(|v| v.len())
 	}
 
-	/// Expose the storage API.
-	pub async fn storage_api(
-		&self,
-		at: &BlockNumberOrTagOrHash,
-	) -> Result<Storage<SrcChainConfig, OnlineClient<SrcChainConfig>>, ClientError> {
-		match at {
-			BlockNumberOrTagOrHash::U256(block_number) => {
-				let n: SubstrateBlockNumber =
-					(*block_number).try_into().map_err(|_| ClientError::ConversionFailed)?;
-
-				let hash = self.get_block_hash(n).await?.ok_or(ClientError::BlockNotFound)?;
-				Ok(self.inner.api.storage().at(hash))
-			},
-			BlockNumberOrTagOrHash::H256(hash) => Ok(self.inner.api.storage().at(*hash)),
-			BlockNumberOrTagOrHash::BlockTag(_) => {
-				if let Some(block) = self.latest_block().await {
-					return Ok(self.inner.api.storage().at(block.hash()));
-				}
-				let storage = self.inner.api.storage().at_latest().await?;
-				Ok(storage)
-			},
-		}
-	}
-
-	/// Expose the runtime API.
-	pub async fn runtime_api(
-		&self,
-		at: &BlockNumberOrTagOrHash,
-	) -> Result<
-		subxt::runtime_api::RuntimeApi<SrcChainConfig, OnlineClient<SrcChainConfig>>,
-		ClientError,
-	> {
-		match at {
-			BlockNumberOrTagOrHash::U256(block_number) => {
-				let n: SubstrateBlockNumber =
-					(*block_number).try_into().map_err(|_| ClientError::ConversionFailed)?;
-
-				let hash = self.get_block_hash(n).await?.ok_or(ClientError::BlockNotFound)?;
-				Ok(self.inner.api.runtime_api().at(hash))
-			},
-			BlockNumberOrTagOrHash::H256(hash) => Ok(self.inner.api.runtime_api().at(*hash)),
-			BlockNumberOrTagOrHash::BlockTag(_) => {
-				if let Some(block) = self.latest_block().await {
-					return Ok(self.inner.api.runtime_api().at(block.hash()));
-				}
-
-				let api = self.inner.api.runtime_api().at_latest().await?;
-				Ok(api)
-			},
-		}
-	}
-
 	/// Get the balance of the given address.
 	pub async fn balance(
 		&self,
 		address: H160,
 		at: &BlockNumberOrTagOrHash,
 	) -> Result<U256, ClientError> {
-		let account_id = self.account_id(&address);
-		let query = subxt_client::storage().system().account(account_id);
-		let Some(account) = self.storage_api(at).await?.fetch(&query).await? else {
-			return Ok(U256::zero());
-		};
+		// TODO: remove once subxt is updated
+		let address = address.0.into();
 
-		let native = account.data.free.into();
-		Ok(self.inner.native_to_evm_decimals(native))
+		let runtime_api = self.runtime_api(at).await?;
+		let payload = subxt_client::apis().revive_api().balance(address);
+		let balance = runtime_api.call(payload).await?.into();
+		Ok(self.inner.native_to_evm_decimals(balance))
 	}
 
 	/// Get the contract storage for the given contract address and key.
@@ -595,8 +606,14 @@ impl Client {
 		block: BlockNumberOrTagOrHash,
 	) -> Result<Vec<u8>, ClientError> {
 		let storage_api = self.storage_api(&block).await?;
-		let account_id = self.account_id(contract_address);
-		let code_hash: subxt::utils::H256 = account_id.0.into();
+
+		// TODO: remove once subxt is updated
+		let contract_address: subxt::utils::H160 = contract_address.0.into();
+
+		let query = subxt_client::storage().revive().contract_info_of(contract_address);
+		let Some(ContractInfo { code_hash, .. }) = storage_api.fetch(&query).await? else {
+			return Ok(Vec::new());
+		};
 
 		let query = subxt_client::storage().revive().pristine_code(code_hash);
 		let result = storage_api.fetch(&query).await?.map(|v| v.0).unwrap_or_default();
@@ -610,7 +627,6 @@ impl Client {
 		block: BlockNumberOrTagOrHash,
 	) -> Result<EthContractResult<Balance>, ClientError> {
 		let runtime_api = self.runtime_api(&block).await?;
-		let from = tx.from.ok_or(ClientError::DryRunFailed)?;
 		let value = tx
 			.value
 			.unwrap_or_default()
@@ -618,11 +634,11 @@ impl Client {
 			.map_err(|_| ClientError::ConversionFailed)?;
 
 		// TODO: remove once subxt is updated
-		let from = from.0.into();
+		let from = tx.from.map(|v| v.0.into());
 		let to = tx.to.map(|v| v.0.into());
 
 		let payload = subxt_client::apis().revive_api().eth_transact(
-			from,
+			from.unwrap_or_default(),
 			to,
 			value,
 			tx.input.clone().unwrap_or_default().0,
@@ -640,23 +656,21 @@ impl Client {
 		block: BlockNumberOrTagOrHash,
 	) -> Result<U256, ClientError> {
 		let dry_run = self.dry_run(tx, block).await?;
-		Ok(U256::from(dry_run.fee / GAS_PRICE) + 1)
+		Ok(U256::from(dry_run.fee / GAS_PRICE as u128) + GAS_PRICE)
 	}
 
 	/// Get the nonce of the given address.
 	pub async fn nonce(
 		&self,
 		address: H160,
-		block: BlockNumberOrTagOrHash,
-	) -> Result<u32, ClientError> {
-		let account_id = self.account_id(&address);
-		let storage = self.storage_api(&block).await?;
-		let query = subxt_client::storage().system().account(account_id);
-		let Some(account) = storage.fetch(&query).await? else {
-			return Ok(0);
-		};
+		at: BlockNumberOrTagOrHash,
+	) -> Result<U256, ClientError> {
+		let address = address.0.into();
 
-		Ok(account.nonce)
+		let runtime_api = self.runtime_api(&at).await?;
+		let payload = subxt_client::apis().revive_api().nonce(address);
+		let nonce = runtime_api.call(payload).await?;
+		Ok(nonce.into())
 	}
 
 	/// Get the block number of the latest block.
@@ -735,7 +749,7 @@ impl Client {
 	pub async fn evm_block(&self, block: Arc<SubstrateBlock>) -> Result<Block, ClientError> {
 		let runtime_api = self.inner.api.runtime_api().at(block.hash());
 		let max_fee = Self::weight_to_fee(&runtime_api, self.max_block_weight()).await?;
-		let gas_limit = U256::from(max_fee / GAS_PRICE);
+		let gas_limit = U256::from(max_fee / GAS_PRICE as u128);
 
 		let header = block.header();
 		let timestamp = extract_block_timestamp(&block).await.unwrap_or_default();
@@ -771,13 +785,6 @@ impl Client {
 
 		let fee = runtime_api.call(payload).await?;
 		Ok(fee)
-	}
-
-	/// Get the substrate account ID from the EVM address.
-	pub fn account_id(&self, address: &H160) -> AccountId32 {
-		let mut id: [u8; 32] = [0xEE; 32];
-		id[..20].copy_from_slice(address.as_bytes());
-		AccountId32(id)
 	}
 
 	/// Get the chain ID.

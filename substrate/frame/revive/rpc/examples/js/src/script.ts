@@ -3,7 +3,7 @@
 import { readFileSync } from "fs";
 import { Contract, ContractFactory, JsonRpcProvider } from "ethers";
 
-const provider = new JsonRpcProvider("http://localhost:9090");
+const provider = new JsonRpcProvider("http://localhost:8545");
 const signer = await provider.getSigner();
 console.log(
   `Signer address: ${await signer.getAddress()}, Nonce: ${await signer
@@ -18,7 +18,7 @@ function str_to_bytes(str: string): Uint8Array {
 async function deploy() {
   console.log(`Deploying Contract...`);
 
-  const bytecode = readFileSync("demo.polkavm");
+  const bytecode = readFileSync("rpc_demo.polkavm");
   const contractFactory = new ContractFactory(
     [
       "constructor(bytes memory _data)",

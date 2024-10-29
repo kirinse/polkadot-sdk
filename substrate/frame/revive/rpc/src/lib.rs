@@ -17,31 +17,28 @@
 //! The [`EthRpcServer`] RPC server implementation
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use client::{ClientError, GAS_PRICE};
+use crate::runtime::GAS_PRICE;
+use client::ClientError;
 use jsonrpsee::{
 	core::{async_trait, RpcResult},
-	proc_macros::rpc,
 	types::{ErrorCode, ErrorObjectOwned},
 };
-pub use pallet_revive::{evm::*, EthContractResult};
-pub use sp_core::{H160, H256, U256};
+use pallet_revive::{evm::*, EthContractResult};
+use sp_core::{H160, H256, U256};
 use thiserror::Error;
+
+pub mod cli;
 pub mod client;
 pub mod example;
 pub mod subxt_client;
+
+#[cfg(test)]
+mod tests;
 
 mod rpc_methods_gen;
 pub use rpc_methods_gen::*;
 
 pub const LOG_TARGET: &str = "eth-rpc";
-
-/// Additional RPC methods, exposed on the RPC server on top of all the eth_xxx methods.
-#[rpc(server, client)]
-pub trait MiscRpc {
-	/// Returns the health status of the server.
-	#[method(name = "healthcheck")]
-	async fn healthcheck(&self) -> RpcResult<()>;
-}
 
 /// An EVM RPC server implementation.
 pub struct EthRpcServerImpl {
@@ -160,16 +157,13 @@ impl EthRpcServer for EthRpcServerImpl {
 			)
 			.await?;
 
-		let EthContractResult { transact_kind, gas_limit, storage_deposit, .. } = dry_run;
+		let EthContractResult { gas_required, storage_deposit, .. } = dry_run;
 		let call = subxt_client::tx().revive().eth_transact(
 			transaction.0,
-			gas_limit.into(),
+			gas_required.into(),
 			storage_deposit,
-			transact_kind.into(),
 		);
-		let ext = self.client.tx().create_unsigned(&call).map_err(ClientError::from)?;
-		let hash = ext.submit().await.map_err(|err| EthRpcError::ClientError(err.into()))?;
-
+		let hash = self.client.submit(call).await?;
 		Ok(hash)
 	}
 
@@ -360,16 +354,6 @@ impl EthRpcServer for EthRpcServerImpl {
 		block: BlockNumberOrTagOrHash,
 	) -> RpcResult<U256> {
 		let nonce = self.client.nonce(address, block).await?;
-		Ok(nonce.into())
-	}
-}
-
-/// A [`MiscRpcServer`] RPC server implementation.
-pub struct MiscRpcServerImpl;
-
-#[async_trait]
-impl MiscRpcServer for MiscRpcServerImpl {
-	async fn healthcheck(&self) -> RpcResult<()> {
-		Ok(())
+		Ok(nonce)
 	}
 }

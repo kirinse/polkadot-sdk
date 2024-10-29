@@ -86,7 +86,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function deploy() {
     console.log("Deploying contract...");
 
-    const bytecode = await fetch("demo.polkavm").then((response) => {
+    const bytecode = await fetch("rpc_demo.polkavm").then((response) => {
       if (!response.ok) {
         throw new Error("Network response was not ok");
       }

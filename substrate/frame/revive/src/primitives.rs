@@ -20,7 +20,7 @@
 use crate::H160;
 use alloc::vec::Vec;
 use codec::{Decode, Encode, MaxEncodedLen};
-use frame_support::{dispatch::DispatchInfo, weights::Weight};
+use frame_support::weights::Weight;
 use pallet_revive_uapi::ReturnFlags;
 use scale_info::TypeInfo;
 use sp_runtime::{
@@ -83,51 +83,12 @@ pub struct ContractResult<R, Balance, EventRecord> {
 }
 
 /// The result of the execution of a `eth_transact` call.
-pub struct EthContractResultDetails<Balance> {
-	/// The kind of transaction that was executed.
-	pub transact_kind: EthTransactKind,
-	/// The call's dispatch info.
-	pub dispatch_info: DispatchInfo,
-	/// Length of the encoded call.
-	pub len: u32,
-	/// Gas limit of the transaction.
-	pub gas_limit: Weight,
-	/// Storage deposit charged.
-	pub storage_deposit: Balance,
-	/// The execution result.
-	pub result: Result<Vec<u8>, DispatchError>,
-}
-
-impl<Balance: From<u32>> EthContractResultDetails<Balance> {
-	/// Map to a EthContractResult, using the provided compute_fee function.
-	///
-	/// # Parameters
-	///
-	/// - `compute_fee`: A function that takes the length of the encoded call, the dispatch info and
-	///   the tip and returns the fee.
-	pub fn map(
-		self,
-		compute_fee: impl FnOnce(u32, &DispatchInfo, Balance) -> Balance,
-	) -> EthContractResult<Balance> {
-		EthContractResult {
-			transact_kind: self.transact_kind,
-			result: self.result,
-			gas_limit: self.gas_limit,
-			storage_deposit: self.storage_deposit,
-			fee: compute_fee(self.len, &self.dispatch_info, 0.into()),
-		}
-	}
-}
-
-/// Similar to `EthContractResultDetails` but with the fee instead of dispatch info and len.
 #[derive(Clone, Eq, PartialEq, Encode, Decode, RuntimeDebug, TypeInfo)]
 pub struct EthContractResult<Balance> {
-	/// The kind of transaction that was executed.
-	pub transact_kind: EthTransactKind,
 	/// The fee charged for the execution.
 	pub fee: Balance,
-	/// Gas limit of the transaction.
-	pub gas_limit: Weight,
+	/// The amount of gas that was necessary to execute the transaction.
+	pub gas_required: Weight,
 	/// Storage deposit charged.
 	pub storage_deposit: Balance,
 	/// The execution result.
@@ -163,20 +124,6 @@ impl ExecReturnValue {
 	pub fn did_revert(&self) -> bool {
 		self.flags.contains(ReturnFlags::REVERT)
 	}
-}
-
-/// Describes the type of an [`crate::Call::eth_transact`] call.
-#[derive(Clone, Copy, PartialEq, Eq, Encode, Decode, RuntimeDebug, TypeInfo)]
-pub enum EthTransactKind {
-	/// A Call to an existing contract.
-	Call,
-	/// The instantiation of a new contract.
-	InstantiateWithCode {
-		#[codec(compact)]
-		code_len: u32,
-		#[codec(compact)]
-		data_len: u32,
-	},
 }
 
 /// The result of a successful contract instantiation.

@@ -32,25 +32,23 @@ mod storage;
 mod transient_storage;
 mod wasm;
 
+#[cfg(test)]
+mod tests;
+
 pub mod chain_extension;
 pub mod debug;
 pub mod evm;
 pub mod test_utils;
 pub mod weights;
 
-pub use crate::exec::MomentOf;
-use frame_support::traits::IsType;
-pub use primitives::*;
-use sp_core::U256;
-
-#[cfg(test)]
-mod tests;
 use crate::{
+	evm::{runtime::GAS_PRICE, TransactionLegacyUnsigned},
 	exec::{AccountIdOf, ExecError, Executable, Ext, Key, Origin, Stack as ExecStack},
 	gas::GasMeter,
 	storage::{meter::Meter as StorageMeter, ContractInfo, DeletionQueueManager},
 	wasm::{CodeInfo, RuntimeCosts, WasmBlob},
 };
+use alloc::boxed::Box;
 use codec::{Codec, Decode, Encode};
 use environmental::*;
 use frame_support::{
@@ -59,9 +57,10 @@ use frame_support::{
 		PostDispatchInfo, RawOrigin,
 	},
 	ensure,
+	pallet_prelude::DispatchClass,
 	traits::{
 		fungible::{Inspect, Mutate, MutateHold},
-		ConstU32, ConstU64, Contains, EnsureOrigin, Get, Time,
+		ConstU32, ConstU64, Contains, EnsureOrigin, Get, IsType, OriginTrait, Time,
 	},
 	weights::{Weight, WeightMeter},
 	BoundedVec, RuntimeDebugNoBound,
@@ -71,18 +70,21 @@ use frame_system::{
 	pallet_prelude::{BlockNumberFor, OriginFor},
 	EventRecord, Pallet as System,
 };
+use pallet_transaction_payment::OnChargeTransaction;
 use scale_info::TypeInfo;
-use sp_core::{H160, H256};
+use sp_core::{H160, H256, U256};
 use sp_runtime::{
 	traits::{BadOrigin, Convert, Dispatchable, Saturating},
 	DispatchError,
 };
 
 pub use crate::{
-	address::{create1, create2, AddressMapper, DefaultAddressMapper},
+	address::{create1, create2, AccountId32Mapper, AddressMapper},
 	debug::Tracing,
+	exec::MomentOf,
 	pallet::*,
 };
+pub use primitives::*;
 pub use weights::WeightInfo;
 
 #[cfg(doc)]
@@ -91,6 +93,7 @@ pub use crate::wasm::SyscallDoc;
 type TrieId = BoundedVec<u8, ConstU32<128>>;
 type BalanceOf<T> =
 	<<T as Config>::Currency as Inspect<<T as frame_system::Config>::AccountId>>::Balance;
+type OnChargeTransactionBalanceOf<T> = <<T as pallet_transaction_payment::Config>::OnChargeTransaction as OnChargeTransaction<T>>::Balance;
 type CodeVec = BoundedVec<u8, ConstU32<{ limits::code::BLOB_BYTES }>>;
 type EventRecordOf<T> =
 	EventRecord<<T as frame_system::Config>::RuntimeEvent, <T as frame_system::Config>::Hash>;
@@ -158,11 +161,9 @@ pub mod pallet {
 
 		/// The overarching call type.
 		#[pallet::no_default_bounds]
-		type RuntimeCall: Dispatchable<RuntimeOrigin = Self::RuntimeOrigin, PostInfo = PostDispatchInfo>
-			+ GetDispatchInfo
-			+ codec::Decode
-			+ core::fmt::Debug
-			+ IsType<<Self as frame_system::Config>::RuntimeCall>;
+		type RuntimeCall: Parameter
+			+ Dispatchable<RuntimeOrigin = Self::RuntimeOrigin, PostInfo = PostDispatchInfo>
+			+ GetDispatchInfo;
 
 		/// Overarching hold reason.
 		#[pallet::no_default_bounds]
@@ -231,9 +232,9 @@ pub mod pallet {
 		#[pallet::constant]
 		type CodeHashLockupDepositPercent: Get<Perbill>;
 
-		/// Only valid type is [`DefaultAddressMapper`].
-		#[pallet::no_default_bounds]
-		type AddressMapper: AddressMapper<AccountIdOf<Self>>;
+		/// Use either valid type is [`address::AccountId32Mapper`] or [`address::H160Mapper`].
+		#[pallet::no_default]
+		type AddressMapper: AddressMapper<Self>;
 
 		/// Make contract callable functions marked as `#[unstable]` available.
 		///
@@ -359,7 +360,6 @@ pub mod pallet {
 
 			#[inject_runtime_type]
 			type RuntimeCall = ();
-			type AddressMapper = DefaultAddressMapper;
 			type CallFilter = ();
 			type ChainExtension = ();
 			type CodeHashLockupDepositPercent = CodeHashLockupDepositPercent;
@@ -560,6 +560,12 @@ pub mod pallet {
 		/// Immutable data can only be set during deploys and only be read during calls.
 		/// Additionally, it is only valid to set the data once and it must not be empty.
 		InvalidImmutableAccess,
+		/// An `AccountID32` account tried to interact with the pallet without having a mapping.
+		///
+		/// Call [`Pallet::map_account`] in order to create a mapping for the account.
+		AccountUnmapped,
+		/// Tried to map an account that is already mapped.
+		AccountAlreadyMapped,
 	}
 
 	/// A reason for the pallet contracts placing a hold on funds.
@@ -569,6 +575,8 @@ pub mod pallet {
 		CodeUploadDepositReserve,
 		/// The Pallet has reserved it for storage deposit.
 		StorageDepositReserve,
+		/// Deposit for creating an address mapping in [`AddressSuffix`].
+		AddressMapping,
 	}
 
 	/// A mapping from a contract's code hash to its code.
@@ -599,6 +607,14 @@ pub mod pallet {
 	#[pallet::storage]
 	pub(crate) type DeletionQueueCounter<T: Config> =
 		StorageValue<_, DeletionQueueManager<T>, ValueQuery>;
+
+	/// Map a Ethereum address to its original `AccountId32`.
+	///
+	/// Stores the last 12 byte for addresses that were originally an `AccountId32` instead
+	/// of an `H160`. Register your `AccountId32` using [`Pallet::map_account`] in order to
+	/// use it with this pallet.
+	#[pallet::storage]
+	pub(crate) type AddressSuffix<T: Config> = StorageMap<_, Identity, H160, [u8; 12]>;
 
 	#[pallet::extra_constants]
 	impl<T: Config> Pallet<T> {
@@ -748,7 +764,6 @@ pub mod pallet {
 		/// * `gas_limit`: The gas limit enforced during contract execution.
 		/// * `storage_deposit_limit`: The maximum balance that can be charged to the caller for
 		///   storage usage.
-		/// * `transact_kind`: The type of transaction to execute.
 		///
 		/// # Note
 		///
@@ -758,19 +773,12 @@ pub mod pallet {
 		/// signer and validating the transaction.
 		#[allow(unused_variables)]
 		#[pallet::call_index(0)]
-		#[pallet::weight(
-			match transact_kind {
-				EthTransactKind::Call => T::WeightInfo::call().saturating_add(*gas_limit),
-				EthTransactKind::InstantiateWithCode{code_len, data_len} => T::WeightInfo::instantiate_with_code(*code_len, *data_len)
-					.saturating_add(*gas_limit)
-			}
-		)]
+		#[pallet::weight(Weight::MAX)]
 		pub fn eth_transact(
 			origin: OriginFor<T>,
 			payload: Vec<u8>,
 			gas_limit: Weight,
 			#[pallet::compact] storage_deposit_limit: BalanceOf<T>,
-			transact_kind: EthTransactKind,
 		) -> DispatchResultWithPostInfo {
 			Err(frame_system::Error::CallFiltered::<T>.into())
 		}
@@ -1001,6 +1009,51 @@ pub mod pallet {
 				Ok(())
 			})
 		}
+
+		/// Register the callers account id so that it can be used in contract interactions.
+		///
+		/// This will error if the origin is already mapped or is a eth native `Address20`. It will
+		/// take a deposit that can be released by calling [`Self::unmap_account`].
+		#[pallet::call_index(7)]
+		#[pallet::weight(T::WeightInfo::map_account())]
+		pub fn map_account(origin: OriginFor<T>) -> DispatchResult {
+			let origin = ensure_signed(origin)?;
+			T::AddressMapper::map(&origin)
+		}
+
+		/// Unregister the callers account id in order to free the deposit.
+		///
+		/// There is no reason to ever call this function other than freeing up the deposit.
+		/// This is only useful when the account should no longer be used.
+		#[pallet::call_index(8)]
+		#[pallet::weight(T::WeightInfo::unmap_account())]
+		pub fn unmap_account(origin: OriginFor<T>) -> DispatchResult {
+			let origin = ensure_signed(origin)?;
+			T::AddressMapper::unmap(&origin)
+		}
+
+		/// Dispatch an `call` with the origin set to the callers fallback address.
+		///
+		/// Every `AccountId32` can control its corresponding fallback account. The fallback account
+		/// is the `AccountId20` with the last 12 bytes set to `0xEE`. This is essentially a
+		/// recovery function in case an `AccountId20` was used without creating a mapping first.
+		#[pallet::call_index(9)]
+		#[pallet::weight({
+			let dispatch_info = call.get_dispatch_info();
+			(
+				T::WeightInfo::dispatch_as_fallback_account().saturating_add(dispatch_info.call_weight),
+				dispatch_info.class
+			)
+		})]
+		pub fn dispatch_as_fallback_account(
+			origin: OriginFor<T>,
+			call: Box<<T as Config>::RuntimeCall>,
+		) -> DispatchResultWithPostInfo {
+			let origin = ensure_signed(origin)?;
+			let unmapped_account =
+				T::AddressMapper::to_fallback_account_id(&T::AddressMapper::to_address(&origin));
+			call.dispatch(RawOrigin::Signed(unmapped_account).into())
+		}
 	}
 }
 
@@ -1150,6 +1203,20 @@ where
 	}
 
 	/// A version of [`Self::eth_transact`] used to dry-run Ethereum calls.
+	///
+	/// # Parameters
+	///
+	/// - `origin`: The origin of the call.
+	/// - `dest`: The destination address of the call.
+	/// - `value`: The value to transfer.
+	/// - `input`: The input data.
+	/// - `gas_limit`: The gas limit enforced during contract execution.
+	/// - `storage_deposit_limit`: The maximum balance that can be charged to the caller for storage
+	///   usage.
+	/// - `utx_encoded_size`: A function that takes a call and returns the encoded size of the
+	///   unchecked extrinsic.
+	/// - `debug`: Debugging configuration.
+	/// - `collect_events`: Event collection configuration.
 	pub fn bare_eth_transact(
 		origin: T::AccountId,
 		dest: Option<H160>,
@@ -1157,109 +1224,103 @@ where
 		input: Vec<u8>,
 		gas_limit: Weight,
 		storage_deposit_limit: BalanceOf<T>,
+		utx_encoded_size: impl Fn(Call<T>) -> u32,
 		debug: DebugInfo,
 		collect_events: CollectEvents,
-	) -> EthContractResultDetails<BalanceOf<T>>
+	) -> EthContractResult<BalanceOf<T>>
 	where
+		T: pallet_transaction_payment::Config,
+		<T as frame_system::Config>::RuntimeCall:
+			Dispatchable<Info = frame_support::dispatch::DispatchInfo>,
 		<T as Config>::RuntimeCall: From<crate::Call<T>>,
 		<T as Config>::RuntimeCall: Encode,
+		OnChargeTransactionBalanceOf<T>: Into<BalanceOf<T>>,
 		T::Nonce: Into<U256>,
 	{
-		use crate::evm::TransactionLegacyUnsigned;
-		use frame_support::traits::OriginTrait;
+		// Get the nonce to encode in the tx.
 		let nonce: T::Nonce = <System<T>>::account_nonce(&origin);
 
+		// Use a big enough gas price to ensure that the encoded size is large enough.
+		let max_gas_fee: BalanceOf<T> =
+			(pallet_transaction_payment::Pallet::<T>::weight_to_fee(Weight::MAX) /
+				GAS_PRICE.into())
+			.into();
+
+		// A contract call.
 		if let Some(dest) = dest {
-			let tx = TransactionLegacyUnsigned {
-				value: value.into(),
-				input: input.into(),
-				nonce: nonce.into(),
-				chain_id: Some(T::ChainId::get().into()),
-				gas_price: 1u32.into(),
-				gas: u128::MAX.into(),
-				to: Some(dest),
-				..Default::default()
-			};
-
-			let payload = tx.dummy_signed_payload();
-
+			// Dry run the call.
 			let result = crate::Pallet::<T>::bare_call(
 				T::RuntimeOrigin::signed(origin),
 				dest,
 				value,
 				gas_limit,
 				storage_deposit_limit,
-				tx.input.0,
+				input.clone(),
 				debug,
 				collect_events,
 			);
 
-			let transact_kind = EthTransactKind::Call;
-			let dispatch_call: <T as Config>::RuntimeCall = crate::Call::<T>::eth_transact {
-				payload,
-				gas_limit: result.gas_required,
-				storage_deposit_limit: result.storage_deposit.charge_or_zero(),
-				transact_kind,
-			}
-			.into();
-
-			EthContractResultDetails {
-				transact_kind,
-				dispatch_info: dispatch_call.get_dispatch_info(),
-				len: dispatch_call.encode().len() as u32,
-				gas_limit: result.gas_required,
-				storage_deposit: result.storage_deposit.charge_or_zero(),
-				result: result.result.map(|v| v.data),
-			}
-		} else {
+			// Get the encoded size of the transaction.
 			let tx = TransactionLegacyUnsigned {
 				value: value.into(),
 				input: input.into(),
 				nonce: nonce.into(),
 				chain_id: Some(T::ChainId::get().into()),
-				gas_price: 1u32.into(),
-				gas: u128::MAX.into(),
+				gas_price: GAS_PRICE.into(),
+				gas: max_gas_fee.into(),
+				to: Some(dest),
 				..Default::default()
 			};
-			let payload = tx.dummy_signed_payload();
 
-			let blob = match polkavm::ProgramParts::blob_length(&tx.input.0) {
+			let eth_dispatch_call = crate::Call::<T>::eth_transact {
+				payload: tx.dummy_signed_payload(),
+				gas_limit: result.gas_required,
+				storage_deposit_limit: result.storage_deposit.charge_or_zero(),
+			};
+			let encoded_len = utx_encoded_size(eth_dispatch_call);
+
+			// Get the dispatch info of the call.
+			let dispatch_call: <T as Config>::RuntimeCall = crate::Call::<T>::call {
+				dest,
+				value,
+				gas_limit: result.gas_required,
+				storage_deposit_limit: result.storage_deposit.charge_or_zero(),
+				data: tx.input.0,
+			}
+			.into();
+			let dispatch_info = dispatch_call.get_dispatch_info();
+
+			// Compute the fee.
+			let fee = pallet_transaction_payment::Pallet::<T>::compute_fee(
+				encoded_len,
+				&dispatch_info,
+				0u32.into(),
+			)
+			.into();
+
+			log::debug!(target: LOG_TARGET, "bare_eth_call: len: {encoded_len:?} fee: {fee:?}");
+			EthContractResult {
+				gas_required: result.gas_required,
+				storage_deposit: result.storage_deposit.charge_or_zero(),
+				result: result.result.map(|v| v.data),
+				fee,
+			}
+			// A contract deployment
+		} else {
+			// Extract code and data from the input.
+			let (code, data) = match polkavm::ProgramBlob::blob_length(&input) {
 				Some(blob_len) => blob_len
 					.try_into()
 					.ok()
-					.and_then(|blob_len| (tx.input.0.split_at_checked(blob_len))),
+					.and_then(|blob_len| (input.split_at_checked(blob_len)))
+					.unwrap_or_else(|| (&input[..], &[][..])),
 				_ => {
 					log::debug!(target: LOG_TARGET, "Failed to extract polkavm blob length");
-					None
+					(&input[..], &[][..])
 				},
 			};
 
-			let Some((code, data)) = blob else {
-				log::debug!(target: LOG_TARGET, "Failed to extract polkavm code & data");
-				let transact_kind = EthTransactKind::InstantiateWithCode {
-					code_len: tx.input.0.len() as u32,
-					data_len: 0,
-				};
-
-				let dispatch_call = crate::Call::<T>::eth_transact {
-					payload,
-					gas_limit: Default::default(),
-					storage_deposit_limit: 0u32.into(),
-					transact_kind,
-				};
-
-				return EthContractResultDetails {
-					transact_kind,
-					dispatch_info: dispatch_call.get_dispatch_info(),
-					gas_limit: Default::default(),
-					storage_deposit: Default::default(),
-					len: dispatch_call.encode().len() as u32,
-					result: Err(<Error<T>>::DecodingFailed.into()),
-				}
-			};
-
-			let code_len = code.len() as u32;
-			let data_len = data.len() as u32;
+			// Dry run the call.
 			let result = crate::Pallet::<T>::bare_instantiate(
 				T::RuntimeOrigin::signed(origin),
 				value,
@@ -1268,26 +1329,54 @@ where
 				Code::Upload(code.to_vec()),
 				data.to_vec(),
 				None,
-				DebugInfo::Skip,
-				CollectEvents::Skip,
+				debug,
+				collect_events,
 			);
 
-			let transact_kind = EthTransactKind::InstantiateWithCode { code_len, data_len };
-			let dispatch_call: <T as Config>::RuntimeCall = crate::Call::<T>::eth_transact {
-				payload,
-				transact_kind,
+			// Get the encoded size of the transaction.
+			let tx = TransactionLegacyUnsigned {
+				gas: max_gas_fee.into(),
+				nonce: nonce.into(),
+				value: value.into(),
+				input: input.clone().into(),
+				gas_price: GAS_PRICE.into(),
+				chain_id: Some(T::ChainId::get().into()),
+				..Default::default()
+			};
+			let eth_dispatch_call = crate::Call::<T>::eth_transact {
+				payload: tx.dummy_signed_payload(),
 				gas_limit: result.gas_required,
 				storage_deposit_limit: result.storage_deposit.charge_or_zero(),
-			}
+			};
+			let encoded_len = utx_encoded_size(eth_dispatch_call);
+
+			// Get the dispatch info of the call.
+			let dispatch_call: <T as Config>::RuntimeCall =
+				crate::Call::<T>::instantiate_with_code {
+					value,
+					gas_limit: result.gas_required,
+					storage_deposit_limit: result.storage_deposit.charge_or_zero(),
+					code: code.to_vec(),
+					data: data.to_vec(),
+					salt: None,
+				}
+				.into();
+			let dispatch_info = dispatch_call.get_dispatch_info();
+
+			// Compute the fee.
+			let fee = pallet_transaction_payment::Pallet::<T>::compute_fee(
+				encoded_len,
+				&dispatch_info,
+				0u32.into(),
+			)
 			.into();
 
-			EthContractResultDetails {
-				transact_kind,
-				dispatch_info: dispatch_call.get_dispatch_info(),
-				len: dispatch_call.encode().len() as u32,
-				gas_limit: result.gas_required,
+			log::debug!(target: LOG_TARGET, "Call dry run Result: dispatch_info: {dispatch_info:?} len: {encoded_len:?} fee: {fee:?}");
+			EthContractResult {
+				gas_required: result.gas_required,
 				storage_deposit: result.storage_deposit.charge_or_zero(),
 				result: result.result.map(|v| v.result.data),
+				fee,
 			}
 		}
 	}
@@ -1364,12 +1453,19 @@ environmental!(executing_contract: bool);
 sp_api::decl_runtime_apis! {
 	/// The API used to dry-run contract interactions.
 	#[api_version(1)]
-	pub trait ReviveApi<AccountId, Balance, BlockNumber, EventRecord> where
+	pub trait ReviveApi<AccountId, Balance, Nonce, BlockNumber, EventRecord> where
 		AccountId: Codec,
 		Balance: Codec,
+		Nonce: Codec,
 		BlockNumber: Codec,
 		EventRecord: Codec,
 	{
+		/// Returns the free balance of the given `[H160]` address.
+		fn balance(address: H160) -> Balance;
+
+		/// Returns the nonce of the given `[H160]` address.
+		fn nonce(address: H160) -> Nonce;
+
 		/// Perform a call from a specified account to a given contract.
 		///
 		/// See [`crate::Pallet::bare_call`].
