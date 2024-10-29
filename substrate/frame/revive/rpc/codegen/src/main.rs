@@ -1,4 +1,20 @@
-use crate::generator::TypeGenerator;
+// This file is part of Substrate.
+
+// Copyright (C) Parity Technologies (UK) Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// 	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+use crate::generator::{format_code, TypeGenerator};
 use anyhow::Context;
 use std::path::Path;
 
@@ -42,22 +58,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn format_and_write_file(path: &Path, content: &str) -> anyhow::Result<()> {
-	use std::{io::Write, process::*};
-	let mut rustfmt = Command::new("rustup")
-		.args(&["run", "nightly", "rustfmt"])
-		.stdin(Stdio::piped())
-		.stdout(Stdio::piped())
-		.spawn()?;
-
-	let stdin = rustfmt.stdin.as_mut().expect("Failed to open stdin");
-	stdin.write_all(content.as_bytes())?;
-
-	let output = rustfmt.wait_with_output()?;
-	if !output.status.success() {
-		anyhow::bail!("rustfmt failed: {}", String::from_utf8_lossy(&output.stderr));
-	}
-
-	let code = String::from_utf8_lossy(&output.stdout).to_string();
+	let code = format_code(content)?;
 	std::fs::write(path, code).expect("Unable to write file");
 	Ok(())
 }

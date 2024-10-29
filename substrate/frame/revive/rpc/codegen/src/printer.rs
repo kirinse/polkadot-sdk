@@ -1,3 +1,19 @@
+// This file is part of Substrate.
+
+// Copyright (C) Parity Technologies (UK) Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// 	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 use crate::open_rpc::*;
 use inflector::Inflector;
 
@@ -368,8 +384,7 @@ impl TypePrinter {
 #[cfg(test)]
 mod test {
 	use super::*;
-	use indoc::indoc;
-	use pretty_assertions::assert_eq;
+	use crate::generator::assert_code_match;
 
 	#[test]
 	fn print_struct_works() {
@@ -402,9 +417,9 @@ mod test {
 		};
 		let mut buffer = String::new();
 		gen.print(&mut buffer);
-		assert_eq!(
-			buffer,
-			indoc! {r#"
+		assert_code_match(
+			&buffer,
+			r#"
             /// A simple struct
             #[derive(Debug, Default, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, Eq, PartialEq)]
             pub struct SimpleStruct {
@@ -414,7 +429,7 @@ mod test {
               #[serde(flatten, skip_serializing_if = "Option::is_none")]
               pub second: Option<String>,
             }
-            "#}
+            "#,
 		);
 	}
 
@@ -427,9 +442,9 @@ mod test {
 		};
 		let mut buffer = String::new();
 		gen.print(&mut buffer);
-		assert_eq!(
-			buffer,
-			indoc! {r#"
+		assert_code_match(
+			&buffer,
+			r#"
             /// A simple untagged enum
             #[derive(Debug, Default, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, Eq, PartialEq)]
             pub enum SimpleUntaggedEnum {
@@ -439,7 +454,7 @@ mod test {
               #[serde(rename = "second")]
               Second,
             }
-            "#}
+            "#,
 		);
 	}
 
@@ -458,9 +473,9 @@ mod test {
 		};
 		let mut buffer = String::new();
 		gen.print(&mut buffer);
-		assert_eq!(
-			buffer,
-			indoc! {r#"
+		assert_code_match(
+			&buffer,
+			r#"
          /// A simple enum
          #[derive(Debug, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, From, TryInto, Eq, PartialEq)]
          #[serde(untagged)]
@@ -475,7 +490,7 @@ mod test {
              SimpleEnum::Foo(Default::default())
            }
          }
-         "#}
+         "#,
 		);
 	}
 }

@@ -1,4 +1,19 @@
-use indoc::indoc;
+// This file is part of Substrate.
+
+// Copyright (C) Parity Technologies (UK) Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// 	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 use inflector::Inflector;
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
@@ -107,6 +122,27 @@ pub fn inject_legacy_aliases(specs: &mut OpenRpc) {
 	}
 }
 
+/// Format the given code using rustfmt.
+pub fn format_code(code: &str) -> anyhow::Result<String> {
+	use std::{io::Write, process::*};
+	let mut rustfmt = Command::new("rustup")
+		.args(["run", "nightly", "rustfmt"])
+		.stdin(Stdio::piped())
+		.stdout(Stdio::piped())
+		.spawn()?;
+
+	let stdin = rustfmt.stdin.as_mut().expect("Failed to open stdin");
+	stdin.write_all(code.as_bytes())?;
+
+	let output = rustfmt.wait_with_output()?;
+	if !output.status.success() {
+		anyhow::bail!("rustfmt failed: {}", String::from_utf8_lossy(&output.stderr));
+	}
+
+	let formatted_code = String::from_utf8_lossy(&output.stdout).to_string();
+	Ok(formatted_code)
+}
+
 /// Type generator for generating RPC methods and types.
 #[derive(Default)]
 pub struct TypeGenerator {
@@ -174,7 +210,8 @@ impl TypeGenerator {
 		}
 
 		let mut code = LICENSE.to_string();
-		code.push_str(indoc! {r###"
+		code.push_str(
+			r#"
             //! Generated JSON-RPC methods.
             #![allow(missing_docs)]
 
@@ -184,7 +221,8 @@ impl TypeGenerator {
 
             #[rpc(server, client)]
             pub trait EthRpc {
-        "###});
+        "#,
+		);
 
 		for method in methods {
 			self.generate_rpc_method(&mut code, method);
@@ -208,7 +246,8 @@ impl TypeGenerator {
 	/// types used in the RPC methods.
 	pub fn generate_types(&mut self, specs: &OpenRpc) -> String {
 		let mut code = LICENSE.to_string();
-		code.push_str(indoc! {r###"
+		code.push_str(
+			r#"
             //! Generated JSON-RPC types.
             #![allow(missing_docs)]
 
@@ -220,7 +259,8 @@ impl TypeGenerator {
 			use scale_info::TypeInfo;
 			use serde::{Deserialize, Serialize};
 
-        "###});
+        "#,
+		);
 		loop {
 			let collected = mem::take(&mut self.collected);
 			self.generated.extend(collected.keys().cloned());
@@ -402,9 +442,13 @@ impl TypeNameProvider for TypeGenerator {
 }
 
 #[cfg(test)]
+pub fn assert_code_match(expected: &str, actual: &str) {
+	assert_eq!(format_code(expected).unwrap().trim(), format_code(actual).unwrap().trim());
+}
+
+#[cfg(test)]
 mod test {
 	use super::*;
-	use indoc::indoc;
 	use pretty_assertions::assert_eq;
 
 	#[test]
@@ -458,13 +502,13 @@ mod test {
 		let mut generator = TypeGenerator::new();
 
 		generator.generate_rpc_method(&mut buffer, &method);
-		assert_eq!(
-			buffer,
-			indoc! {r#"
+		assert_code_match(
+			&buffer,
+			r#"
             /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
             #[method(name = "eth_estimateGas")]
             async fn estimate_gas(&self, transaction: GenericTransaction, block: Option<BlockNumberOrTag>) -> RpcResult<U256>;
-            "#}
+            "#,
 		);
 	}
 
@@ -498,9 +542,9 @@ mod test {
 		);
 		let mut buffer = String::new();
 		res.print(&mut buffer);
-		assert_eq!(
-			buffer,
-			indoc! {r###"
+		assert_code_match(
+			&buffer,
+			r#"
             /// Signed 4844 Transaction
             #[derive(Debug, Default, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, Eq, PartialEq)]
             pub struct Transaction4844Signed {
@@ -515,7 +559,7 @@ mod test {
               #[serde(rename = "yParity", skip_serializing_if = "Option::is_none")]
               pub y_parity: Option<U256>,
             }
-            "###}
+            "#,
 		);
 	}
 
@@ -529,9 +573,9 @@ mod test {
 		);
 		let mut buffer = String::new();
 		res.print(&mut buffer);
-		assert_eq!(
-			buffer,
-			indoc! {r###"
+		assert_code_match(
+			&buffer,
+			r#"
               #[derive(Debug, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, From, TryInto, Eq, PartialEq)]
               #[serde(untagged)]
               pub enum TransactionUnsigned {
@@ -545,7 +589,7 @@ mod test {
                   TransactionUnsigned::Transaction4844Unsigned(Default::default())
                 }
               }
-            "###}
+            "#,
 		);
 	}
 
@@ -560,9 +604,9 @@ mod test {
 		let mut buffer = String::new();
 		res.print(&mut buffer);
 
-		assert_eq!(
-			buffer,
-			indoc! {r###"
+		assert_code_match(
+			&buffer,
+			r#"
                 /// Syncing status
                 #[derive(Debug, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, From, TryInto, Eq, PartialEq)]
                 #[serde(untagged)]
@@ -578,7 +622,7 @@ mod test {
                     SyncingStatus::SyncingProgress(Default::default())
                   }
                 }
-            "###}
+            "#,
 		);
 	}
 
@@ -592,12 +636,12 @@ mod test {
 		);
 		let mut buffer = String::new();
 		res.print(&mut buffer);
-		assert_eq!(
-			buffer,
-			indoc! {r###"
+		assert_code_match(
+			&buffer,
+			r#"
             /// Access list
             pub type AccessList = Vec<AccessListEntry>;
-            "###}
+            "#,
 		);
 	}
 
@@ -611,12 +655,12 @@ mod test {
 		);
 		let mut buffer = String::new();
 		res.print(&mut buffer);
-		assert_eq!(
-			buffer,
-			indoc! {r###"
+		assert_code_match(
+			&buffer,
+			r#"
             /// Filter Topics
             pub type FilterTopics = Vec<FilterTopic>;
-            "###}
+            "#,
 		);
 	}
 
@@ -631,9 +675,9 @@ mod test {
 
 		let mut buffer = String::new();
 		res.print(&mut buffer);
-		assert_eq!(
-			buffer,
-			indoc! {r###"
+		assert_code_match(
+			&buffer,
+			r#"
             /// Transaction object generic to all types
             #[derive(Debug, Default, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, Eq, PartialEq)]
             pub struct Transaction {
@@ -690,7 +734,7 @@ mod test {
               #[serde(skip_serializing_if = "Option::is_none")]
               pub value: Option<U256>,
             }
-            "###}
+            "#,
 		);
 	}
 }
