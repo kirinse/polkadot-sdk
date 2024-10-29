@@ -1653,7 +1653,8 @@
 				"properties": {
 					"type": {
 						"title": "type",
-						"$ref": "#/components/schemas/byte"
+						"type": "string",
+						"pattern": "^0x3$"
 					},
 					"nonce": {
 						"title": "nonce",
