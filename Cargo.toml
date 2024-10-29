@@ -400,7 +400,6 @@ members = [
 	"substrate/frame/remark",
 	"substrate/frame/revive",
 	"substrate/frame/revive/fixtures",
-	"substrate/frame/revive/",
 	"substrate/frame/revive/mock-network",
 	"substrate/frame/revive/proc-macro",
 	"substrate/frame/revive/rpc",
