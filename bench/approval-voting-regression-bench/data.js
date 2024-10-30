@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1730307735809,
+  "lastUpdate": 1730309906308,
   "repoUrl": "https://github.com/paritytech/polkadot-sdk",
   "entries": {
     "approval-voting-regression-bench": [
@@ -32722,6 +32722,105 @@ window.BENCHMARK_DATA = {
           {
             "name": "approval-voting-parallel/approval-voting-parallel-0",
             "value": 2.453430113899999,
+            "unit": "seconds"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "serban@parity.io",
+            "name": "Serban Iorga",
+            "username": "serban300"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "01936b346098e4c603f035622dfd24846ac5cb52",
+          "message": "Publish `polkadot-omni-node` binary (#6057)\n\nCloses https://github.com/paritytech/polkadot-sdk/issues/5566\n\nPublish the `polkadot-omni-node` binary\n\nThis is a best effort. I'm not very familiar with the release /\npublishing process and also not sure how to test this.\n@paritytech/release-engineering can you take a look on this PR please ?\n\n---------\n\nCo-authored-by: EgorPopelyaev <egor@parity.io>",
+          "timestamp": "2024-10-30T16:20:09Z",
+          "tree_id": "1be2d5e4c4ad7c02a0c1b7ffe4afb5d252a091d0",
+          "url": "https://github.com/paritytech/polkadot-sdk/commit/01936b346098e4c603f035622dfd24846ac5cb52"
+        },
+        "date": 1730309887460,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "Received from peers",
+            "value": 52946.2,
+            "unit": "KiB"
+          },
+          {
+            "name": "Sent to peers",
+            "value": 63632.719999999994,
+            "unit": "KiB"
+          },
+          {
+            "name": "approval-voting-parallel/approval-voting-parallel-1",
+            "value": 2.3857549132000004,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-voting-parallel/approval-voting-parallel-2",
+            "value": 2.4389264073800017,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-voting-parallel/approval-voting-parallel-3",
+            "value": 2.40393097709,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-voting-parallel/approval-voting-parallel-subsystem",
+            "value": 0.48941641159998966,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-voting-parallel/approval-voting-parallel-db",
+            "value": 2.1212336659399895,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-voting",
+            "value": 0.00001787958,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-voting-parallel/approval-voting-gather-signatures",
+            "value": 0.005811298690000006,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-voting/test-environment",
+            "value": 0.00001787958,
+            "unit": "seconds"
+          },
+          {
+            "name": "test-environment",
+            "value": 3.3490103032024714,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-voting-parallel/approval-voting-parallel-0",
+            "value": 2.41390777182,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-distribution/test-environment",
+            "value": 0.000018844089999999997,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-distribution",
+            "value": 0.000018844089999999997,
+            "unit": "seconds"
+          },
+          {
+            "name": "approval-voting-parallel",
+            "value": 12.258981445719982,
             "unit": "seconds"
           }
         ]
