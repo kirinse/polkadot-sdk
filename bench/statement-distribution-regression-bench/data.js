@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1730307761625,
+  "lastUpdate": 1730309933042,
   "repoUrl": "https://github.com/paritytech/polkadot-sdk",
   "entries": {
     "statement-distribution-regression-bench": [
@@ -18123,6 +18123,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "statement-distribution",
             "value": 0.03539568166799999,
+            "unit": "seconds"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "serban@parity.io",
+            "name": "Serban Iorga",
+            "username": "serban300"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "01936b346098e4c603f035622dfd24846ac5cb52",
+          "message": "Publish `polkadot-omni-node` binary (#6057)\n\nCloses https://github.com/paritytech/polkadot-sdk/issues/5566\n\nPublish the `polkadot-omni-node` binary\n\nThis is a best effort. I'm not very familiar with the release /\npublishing process and also not sure how to test this.\n@paritytech/release-engineering can you take a look on this PR please ?\n\n---------\n\nCo-authored-by: EgorPopelyaev <egor@parity.io>",
+          "timestamp": "2024-10-30T16:20:09Z",
+          "tree_id": "1be2d5e4c4ad7c02a0c1b7ffe4afb5d252a091d0",
+          "url": "https://github.com/paritytech/polkadot-sdk/commit/01936b346098e4c603f035622dfd24846ac5cb52"
+        },
+        "date": 1730309914030,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "Sent to peers",
+            "value": 127.93399999999994,
+            "unit": "KiB"
+          },
+          {
+            "name": "Received from peers",
+            "value": 106.39999999999996,
+            "unit": "KiB"
+          },
+          {
+            "name": "test-environment",
+            "value": 0.045035683041999966,
+            "unit": "seconds"
+          },
+          {
+            "name": "statement-distribution",
+            "value": 0.03542241754400002,
             "unit": "seconds"
           }
         ]
