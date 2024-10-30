@@ -81,7 +81,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("yet-another-parachain"),
 	impl_name: create_runtime_str!("yet-another-parachain"),
 	authoring_version: 1,
-	spec_version: 1_001_000,
+	spec_version: 1_001_001,
 	impl_version: 0,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 6,
@@ -115,9 +115,9 @@ pub fn native_version() -> NativeVersion {
 /// We assume that ~10% of the block weight is consumed by `on_initialize` handlers.
 /// This is used to limit the maximal weight of a single extrinsic.
 const AVERAGE_ON_INITIALIZE_RATIO: Perbill = Perbill::from_percent(10);
-/// We allow `Normal` extrinsics to fill up the block up to 75%, the rest can be used
+/// We allow `Normal` extrinsics to fill up the block up to 95%, the rest can be used
 /// by  Operational  extrinsics.
-const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
+const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(95);
 /// We allow for 2 seconds of compute with a 6 second average block time.
 const MAXIMUM_BLOCK_WEIGHT: Weight = Weight::from_parts(
 	WEIGHT_REF_TIME_PER_SECOND.saturating_mul(2),
